@@ -78,3 +78,110 @@ Finally, we need to install the control-plane supporting components. These compo
 ```shell
 $ kubectl apply -f ./samples/addons
 ```
+
+## 2.3 Deploying your first application in the service mesh
+[source code](/services/)
+
+* Creating default namespace `istioinaction` 
+```shell
+$  kubectl create namespace istioinaction
+$  kubectl config set-context $(kubectl config current-context) \
+ --namespace=istioinaction
+```
+* Using Catalog service : [$SRC_BASE/services/catalog/kubernetes/catalog.yaml](/services/catalog/kubernetes/catalog.yaml)
+```yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: catalog
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: catalog
+  name: catalog
+spec:
+  ports:
+  - name: http
+    port: 80
+    protocol: TCP
+    targetPort: 3000
+  selector:
+    app: catalog
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: catalog
+    version: v1
+  name: catalog
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: catalog
+      version: v1
+  template:
+    metadata:
+      labels:
+        app: catalog
+        version: v1
+    spec: 
+      serviceAccountName: catalog
+      containers:
+      - env:
+        - name: KUBERNETES_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        image: istioinaction/catalog:latest
+        imagePullPolicy: IfNotPresent
+        name: catalog
+        ports:
+        - containerPort: 3000
+          name: http
+          protocol: TCP
+        securityContext:
+          privileged: false
+```
+Before we deploy this, however, we want to **inject the Istio service proxy** so that this service can participate in the service mesh. From the root of the source code, run the istioctl command we introduced earlier:
+```
+$ istioctl kube-inject -f services/catalog/kubernetes/catalog.yaml
+```
+
+If you look through the previous command’s output, the YAML now includes a few extra containers as part of the deployment. Most notably, you should see the following:
+```yaml
+      - args:
+        - proxy
+        - sidecar
+        - --domain
+        - $(POD_NAMESPACE).svc.cluster.local
+        - --proxyLogLevel=warning
+        - --proxyComponentLogLevel=misc:error
+        - --log_output_level=default:info
+        - --concurrency
+        - "2"
+        env:
+        - name: JWT_POLICY
+          value: third-party-jwt
+        - name: PILOT_CERT_PROVIDER
+          value: istiod
+        - name: CA_ADDR
+          value: istiod.istio-system.svc:15012
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+...
+        image: docker.io/istio/proxyv2:1.15.1
+        name: istio-proxy
+```
+We could deploy the YAML file created by the kube-inject command directly; however, we are going to take advantage of Istio’s ability to automatically inject the sidecar proxy.
+
+To enable **automatic injection**, we label the istioinaction namespace with ``istio-injection=enabled``:
+```shell
+$ kubectl label namespace istioinaction istio-injection=enabled
+```
+Now let’s create the catalog deployment:
